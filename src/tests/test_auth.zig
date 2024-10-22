@@ -1,19 +1,15 @@
 const std = @import("std");
 const zap = @import("zap");
-// const Authenticators = @import("http_auth.zig");
-const Authenticators = zap;
-const Endpoints = zap;
-// const Endpoints = @import("endpoint.zig");
+const Authenticators = zap.Auth;
+const Endpoint = zap.Endpoint;
 const fio = zap;
-// const fio = @import("fio.zig");
 const util = zap;
-// const util = @import("util.zig");
 
 test "BearerAuthSingle authenticate" {
     const a = std.testing.allocator;
     const token = "hello, world";
 
-    var auth = try Authenticators.BearerAuthSingle.init(a, token, null);
+    var auth = try Authenticators.BearerSingle.init(a, token, null);
     defer auth.deinit();
 
     // invalid auth header
@@ -33,7 +29,7 @@ test "BearerAuthMulti authenticate" {
 
     try set.put(token, {});
 
-    var auth = try Authenticators.BearerAuthMulti(Set).init(a, &set, null);
+    var auth = try Authenticators.BearerMulti(Set).init(a, &set, null);
     defer auth.deinit();
 
     // invalid auth header
@@ -54,7 +50,7 @@ test "BasicAuth Token68" {
     try set.put(token, {});
 
     // create authenticator
-    const Authenticator = Authenticators.BasicAuth(Set, .Token68);
+    const Authenticator = Authenticators.Basic(Set, .Token68);
     var auth = try Authenticator.init(a, &set, null);
     defer auth.deinit();
 
@@ -85,7 +81,7 @@ test "BasicAuth UserPass" {
     const encoded = encoder.encode(&buffer, token);
 
     // create authenticator
-    const Authenticator = Authenticators.BasicAuth(Map, .UserPass);
+    const Authenticator = Authenticators.Basic(Map, .UserPass);
     var auth = try Authenticator.init(a, &map, null);
     defer auth.deinit();
 
@@ -106,21 +102,21 @@ const HTTP_RESPONSE: []const u8 =
 ;
 var received_response: []const u8 = "null";
 
-fn endpoint_http_get(e: *Endpoints.SimpleEndpoint, r: zap.SimpleRequest) void {
+fn endpoint_http_get(e: *Endpoint, r: zap.Request) void {
     _ = e;
     r.sendBody(HTTP_RESPONSE) catch return;
     received_response = HTTP_RESPONSE;
     std.time.sleep(1 * std.time.ns_per_s);
-    zap.fio_stop();
+    zap.stop();
 }
 
-fn endpoint_http_unauthorized(e: *Endpoints.SimpleEndpoint, r: zap.SimpleRequest) void {
+fn endpoint_http_unauthorized(e: *Endpoint, r: zap.Request) void {
     _ = e;
     r.setStatus(.unauthorized);
     r.sendBody("UNAUTHORIZED ACCESS") catch return;
     received_response = "UNAUTHORIZED";
     std.time.sleep(1 * std.time.ns_per_s);
-    zap.fio_stop();
+    zap.stop();
 }
 
 //
@@ -133,31 +129,36 @@ const ClientAuthReqHeaderFields = struct {
 };
 
 fn makeRequest(a: std.mem.Allocator, url: []const u8, auth: ?ClientAuthReqHeaderFields) !void {
-    const uri = try std.Uri.parse(url);
-
-    var h = std.http.Headers{ .allocator = a };
-    defer h.deinit();
-
-    if (auth) |auth_fields| {
-        const authstring = try std.fmt.allocPrint(a, "{s}{s}", .{ auth_fields.auth.str(), auth_fields.token });
-        defer a.free(authstring);
-        try h.append(auth_fields.auth.headerFieldStrHeader(), authstring);
-    }
-
     var http_client: std.http.Client = .{ .allocator = a };
     defer http_client.deinit();
 
-    var req = try http_client.request(.GET, uri, h, .{});
-    defer req.deinit();
+    var auth_buf: [256]u8 = undefined;
+    const auth_string: []const u8 = blk: {
+        if (auth) |auth_fields| {
+            const authstring = try std.fmt.bufPrint(&auth_buf, "{s}{s}", .{ auth_fields.auth.str(), auth_fields.token });
+            break :blk authstring;
+        } else {
+            break :blk "";
+        }
+    };
+    _ = try http_client.fetch(.{
+        .location = .{ .url = url },
+        .headers = .{
+            .authorization = .omit,
+        },
+        .extra_headers = blk: {
+            if (auth) |auth_fields| {
+                break :blk &.{.{
+                    .name = auth_fields.auth.headerFieldStrHeader(),
+                    .value = auth_string,
+                }};
+            } else {
+                break :blk &.{};
+            }
+        },
+    });
 
-    try req.start();
-    try req.wait();
-    // var br = std.io.bufferedReaderSize(std.crypto.tls.max_ciphertext_record_len, req.reader());
-    // var buffer: [1024]u8 = undefined;
-    // we know we won't receive a lot
-    // const len = try br.reader().readAll(&buffer);
-    // std.debug.print("RESPONSE:\n{s}\n", .{buffer[0..len]});
-    zap.fio_stop();
+    zap.stop();
 }
 
 fn makeRequestThread(a: std.mem.Allocator, url: []const u8, auth: ?ClientAuthReqHeaderFields) !std.Thread {
@@ -173,7 +174,7 @@ test "BearerAuthSingle authenticateRequest OK" {
     const token = "ABCDEFG";
 
     // setup listener
-    var listener = zap.SimpleEndpointListener.init(
+    var listener = zap.Endpoint.Listener.init(
         a,
         .{
             .port = 3000,
@@ -186,22 +187,22 @@ test "BearerAuthSingle authenticateRequest OK" {
     defer listener.deinit();
 
     // create mini endpoint
-    var ep = Endpoints.SimpleEndpoint.init(.{
+    var ep = Endpoint.init(.{
         .path = "/test",
         .get = endpoint_http_get,
         .unauthorized = endpoint_http_unauthorized,
     });
 
     // create authenticator
-    const Authenticator = Authenticators.BearerAuthSingle;
+    const Authenticator = Authenticators.BearerSingle;
     var authenticator = try Authenticator.init(a, token, null);
     defer authenticator.deinit();
 
     // create authenticating endpoint
-    const BearerAuthEndpoint = Endpoints.AuthenticatingEndpoint(Authenticator);
+    const BearerAuthEndpoint = Endpoint.Authenticating(Authenticator);
     var auth_ep = BearerAuthEndpoint.init(&ep, &authenticator);
 
-    try listener.addEndpoint(auth_ep.getEndpoint());
+    try listener.register(auth_ep.endpoint());
 
     listener.listen() catch {};
     // std.debug.print("\n\n*******************************************\n", .{});
@@ -215,7 +216,7 @@ test "BearerAuthSingle authenticateRequest OK" {
     // start worker threads
     zap.start(.{
         .threads = 1,
-        .workers = 0,
+        .workers = 1,
     });
 
     try std.testing.expectEqualStrings(HTTP_RESPONSE, received_response);
@@ -226,7 +227,7 @@ test "BearerAuthSingle authenticateRequest test-unauthorized" {
     const token = "ABCDEFG";
 
     // setup listener
-    var listener = zap.SimpleEndpointListener.init(
+    var listener = zap.Endpoint.Listener.init(
         a,
         .{
             .port = 3000,
@@ -239,7 +240,7 @@ test "BearerAuthSingle authenticateRequest test-unauthorized" {
     defer listener.deinit();
 
     // create mini endpoint
-    var ep = Endpoints.SimpleEndpoint.init(.{
+    var ep = Endpoint.init(.{
         .path = "/test",
         .get = endpoint_http_get,
         .unauthorized = endpoint_http_unauthorized,
@@ -252,15 +253,15 @@ test "BearerAuthSingle authenticateRequest test-unauthorized" {
     // insert auth tokens
     try set.put(token, {});
 
-    const Authenticator = Authenticators.BearerAuthMulti(Set);
+    const Authenticator = Authenticators.BearerMulti(Set);
     var authenticator = try Authenticator.init(a, &set, null);
     defer authenticator.deinit();
 
     // create authenticating endpoint
-    const BearerAuthEndpoint = Endpoints.AuthenticatingEndpoint(Authenticator);
+    const BearerAuthEndpoint = Endpoint.Authenticating(Authenticator);
     var auth_ep = BearerAuthEndpoint.init(&ep, &authenticator);
 
-    try listener.addEndpoint(auth_ep.getEndpoint());
+    try listener.register(auth_ep.endpoint());
 
     listener.listen() catch {};
     // std.debug.print("Waiting for the following:\n", .{});
@@ -272,7 +273,7 @@ test "BearerAuthSingle authenticateRequest test-unauthorized" {
     // start worker threads
     zap.start(.{
         .threads = 1,
-        .workers = 0,
+        .workers = 1,
     });
 
     try std.testing.expectEqualStrings("UNAUTHORIZED", received_response);
@@ -283,7 +284,7 @@ test "BearerAuthMulti authenticateRequest OK" {
     const token = "ABCDEFG";
 
     // setup listener
-    var listener = zap.SimpleEndpointListener.init(
+    var listener = zap.Endpoint.Listener.init(
         a,
         .{
             .port = 3000,
@@ -296,22 +297,22 @@ test "BearerAuthMulti authenticateRequest OK" {
     defer listener.deinit();
 
     // create mini endpoint
-    var ep = Endpoints.SimpleEndpoint.init(.{
+    var ep = Endpoint.init(.{
         .path = "/test",
         .get = endpoint_http_get,
         .unauthorized = endpoint_http_unauthorized,
     });
 
     // create authenticator
-    const Authenticator = Authenticators.BearerAuthSingle;
+    const Authenticator = Authenticators.BearerSingle;
     var authenticator = try Authenticator.init(a, token, null);
     defer authenticator.deinit();
 
     // create authenticating endpoint
-    const BearerAuthEndpoint = Endpoints.AuthenticatingEndpoint(Authenticator);
+    const BearerAuthEndpoint = Endpoint.Authenticating(Authenticator);
     var auth_ep = BearerAuthEndpoint.init(&ep, &authenticator);
 
-    try listener.addEndpoint(auth_ep.getEndpoint());
+    try listener.register(auth_ep.endpoint());
 
     listener.listen() catch {};
     // std.debug.print("Waiting for the following:\n", .{});
@@ -323,7 +324,7 @@ test "BearerAuthMulti authenticateRequest OK" {
     // start worker threads
     zap.start(.{
         .threads = 1,
-        .workers = 0,
+        .workers = 1,
     });
 
     try std.testing.expectEqualStrings(HTTP_RESPONSE, received_response);
@@ -334,7 +335,7 @@ test "BearerAuthMulti authenticateRequest test-unauthorized" {
     const token = "invalid";
 
     // setup listener
-    var listener = zap.SimpleEndpointListener.init(
+    var listener = zap.Endpoint.Listener.init(
         a,
         .{
             .port = 3000,
@@ -347,22 +348,22 @@ test "BearerAuthMulti authenticateRequest test-unauthorized" {
     defer listener.deinit();
 
     // create mini endpoint
-    var ep = Endpoints.SimpleEndpoint.init(.{
+    var ep = Endpoint.init(.{
         .path = "/test",
         .get = endpoint_http_get,
         .unauthorized = endpoint_http_unauthorized,
     });
 
     // create authenticator
-    const Authenticator = Authenticators.BearerAuthSingle;
+    const Authenticator = Authenticators.BearerSingle;
     var authenticator = try Authenticator.init(a, token, null);
     defer authenticator.deinit();
 
     // create authenticating endpoint
-    const BearerAuthEndpoint = Endpoints.AuthenticatingEndpoint(Authenticator);
+    const BearerAuthEndpoint = Endpoint.Authenticating(Authenticator);
     var auth_ep = BearerAuthEndpoint.init(&ep, &authenticator);
 
-    try listener.addEndpoint(auth_ep.getEndpoint());
+    try listener.register(auth_ep.endpoint());
 
     listener.listen() catch {};
     // std.debug.print("Waiting for the following:\n", .{});
@@ -374,7 +375,7 @@ test "BearerAuthMulti authenticateRequest test-unauthorized" {
     // start worker threads
     zap.start(.{
         .threads = 1,
-        .workers = 0,
+        .workers = 1,
     });
 
     try std.testing.expectEqualStrings(HTTP_RESPONSE, received_response);
@@ -385,7 +386,7 @@ test "BasicAuth Token68 authenticateRequest" {
     const token = "QWxhZGRpbjpvcGVuIHNlc2FtZQ==";
 
     // setup listener
-    var listener = zap.SimpleEndpointListener.init(
+    var listener = zap.Endpoint.Listener.init(
         a,
         .{
             .port = 3000,
@@ -398,7 +399,7 @@ test "BasicAuth Token68 authenticateRequest" {
     defer listener.deinit();
 
     // create mini endpoint
-    var ep = Endpoints.SimpleEndpoint.init(.{
+    var ep = Endpoint.init(.{
         .path = "/test",
         .get = endpoint_http_get,
         .unauthorized = endpoint_http_unauthorized,
@@ -410,15 +411,15 @@ test "BasicAuth Token68 authenticateRequest" {
     try set.put(token, {});
 
     // create authenticator
-    const Authenticator = Authenticators.BasicAuth(Set, .Token68);
+    const Authenticator = Authenticators.Basic(Set, .Token68);
     var authenticator = try Authenticator.init(a, &set, null);
     defer authenticator.deinit();
 
     // create authenticating endpoint
-    const BearerAuthEndpoint = Endpoints.AuthenticatingEndpoint(Authenticator);
+    const BearerAuthEndpoint = Endpoint.Authenticating(Authenticator);
     var auth_ep = BearerAuthEndpoint.init(&ep, &authenticator);
 
-    try listener.addEndpoint(auth_ep.getEndpoint());
+    try listener.register(auth_ep.endpoint());
 
     listener.listen() catch {};
     // std.debug.print("Waiting for the following:\n", .{});
@@ -430,7 +431,7 @@ test "BasicAuth Token68 authenticateRequest" {
     // start worker threads
     zap.start(.{
         .threads = 1,
-        .workers = 0,
+        .workers = 1,
     });
 
     try std.testing.expectEqualStrings(HTTP_RESPONSE, received_response);
@@ -441,7 +442,7 @@ test "BasicAuth Token68 authenticateRequest test-unauthorized" {
     const token = "QWxhZGRpbjpvcGVuIHNlc2FtZQ==";
 
     // setup listener
-    var listener = zap.SimpleEndpointListener.init(
+    var listener = zap.Endpoint.Listener.init(
         a,
         .{
             .port = 3000,
@@ -454,7 +455,7 @@ test "BasicAuth Token68 authenticateRequest test-unauthorized" {
     defer listener.deinit();
 
     // create mini endpoint
-    var ep = Endpoints.SimpleEndpoint.init(.{
+    var ep = Endpoint.init(.{
         .path = "/test",
         .get = endpoint_http_get,
         .unauthorized = endpoint_http_unauthorized,
@@ -466,15 +467,15 @@ test "BasicAuth Token68 authenticateRequest test-unauthorized" {
     try set.put(token, {});
 
     // create authenticator
-    const Authenticator = Authenticators.BasicAuth(Set, .Token68);
+    const Authenticator = Authenticators.Basic(Set, .Token68);
     var authenticator = try Authenticator.init(a, &set, null);
     defer authenticator.deinit();
 
     // create authenticating endpoint
-    const BearerAuthEndpoint = Endpoints.AuthenticatingEndpoint(Authenticator);
+    const BearerAuthEndpoint = Endpoint.Authenticating(Authenticator);
     var auth_ep = BearerAuthEndpoint.init(&ep, &authenticator);
 
-    try listener.addEndpoint(auth_ep.getEndpoint());
+    try listener.register(auth_ep.endpoint());
 
     listener.listen() catch {};
     // std.debug.print("Waiting for the following:\n", .{});
@@ -486,7 +487,7 @@ test "BasicAuth Token68 authenticateRequest test-unauthorized" {
     // start worker threads
     zap.start(.{
         .threads = 1,
-        .workers = 0,
+        .workers = 1,
     });
 
     try std.testing.expectEqualStrings("UNAUTHORIZED", received_response);
@@ -496,7 +497,7 @@ test "BasicAuth UserPass authenticateRequest" {
     const a = std.testing.allocator;
 
     // setup listener
-    var listener = zap.SimpleEndpointListener.init(
+    var listener = zap.Endpoint.Listener.init(
         a,
         .{
             .port = 3000,
@@ -509,7 +510,7 @@ test "BasicAuth UserPass authenticateRequest" {
     defer listener.deinit();
 
     // create mini endpoint
-    var ep = Endpoints.SimpleEndpoint.init(.{
+    var ep = Endpoint.init(.{
         .path = "/test",
         .get = endpoint_http_get,
         .unauthorized = endpoint_http_unauthorized,
@@ -532,15 +533,15 @@ test "BasicAuth UserPass authenticateRequest" {
     const encoded = encoder.encode(&buffer, token);
 
     // create authenticator
-    const Authenticator = Authenticators.BasicAuth(Map, .UserPass);
+    const Authenticator = Authenticators.Basic(Map, .UserPass);
     var authenticator = try Authenticator.init(a, &map, null);
     defer authenticator.deinit();
 
     // create authenticating endpoint
-    const BearerAuthEndpoint = Endpoints.AuthenticatingEndpoint(Authenticator);
+    const BearerAuthEndpoint = Endpoint.Authenticating(Authenticator);
     var auth_ep = BearerAuthEndpoint.init(&ep, &authenticator);
 
-    try listener.addEndpoint(auth_ep.getEndpoint());
+    try listener.register(auth_ep.endpoint());
 
     listener.listen() catch {};
     // std.debug.print("Waiting for the following:\n", .{});
@@ -552,7 +553,7 @@ test "BasicAuth UserPass authenticateRequest" {
     // start worker threads
     zap.start(.{
         .threads = 1,
-        .workers = 0,
+        .workers = 1,
     });
 
     try std.testing.expectEqualStrings(HTTP_RESPONSE, received_response);
@@ -562,7 +563,7 @@ test "BasicAuth UserPass authenticateRequest test-unauthorized" {
     const a = std.testing.allocator;
 
     // setup listener
-    var listener = zap.SimpleEndpointListener.init(
+    var listener = zap.Endpoint.Listener.init(
         a,
         .{
             .port = 3000,
@@ -575,7 +576,7 @@ test "BasicAuth UserPass authenticateRequest test-unauthorized" {
     defer listener.deinit();
 
     // create mini endpoint
-    var ep = Endpoints.SimpleEndpoint.init(.{
+    var ep = Endpoint.init(.{
         .path = "/test",
         .get = endpoint_http_get,
         .unauthorized = endpoint_http_unauthorized,
@@ -599,15 +600,15 @@ test "BasicAuth UserPass authenticateRequest test-unauthorized" {
     _ = encoded;
 
     // create authenticator
-    const Authenticator = Authenticators.BasicAuth(Map, .UserPass);
+    const Authenticator = Authenticators.Basic(Map, .UserPass);
     var authenticator = try Authenticator.init(a, &map, null);
     defer authenticator.deinit();
 
     // create authenticating endpoint
-    const BearerAuthEndpoint = Endpoints.AuthenticatingEndpoint(Authenticator);
+    const BearerAuthEndpoint = Endpoint.Authenticating(Authenticator);
     var auth_ep = BearerAuthEndpoint.init(&ep, &authenticator);
 
-    try listener.addEndpoint(auth_ep.getEndpoint());
+    try listener.register(auth_ep.endpoint());
 
     listener.listen() catch {};
     // std.debug.print("Waiting for the following:\n", .{});
@@ -619,7 +620,7 @@ test "BasicAuth UserPass authenticateRequest test-unauthorized" {
     // start worker threads
     zap.start(.{
         .threads = 1,
-        .workers = 0,
+        .workers = 1,
     });
 
     try std.testing.expectEqualStrings("UNAUTHORIZED", received_response);

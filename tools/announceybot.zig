@@ -1,6 +1,7 @@
+// for use inside of github, build with
+// zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall announceybot
+// then copy to ./announceybot.exe
 const std = @import("std");
-const PkgHash = @import("pkghash.zig");
-const Manifest = @import("Manifest.zig");
 
 const README_PATH = "README.md";
 const README_MAX_SIZE = 25 * 1024;
@@ -28,7 +29,8 @@ fn usage() void {
         \\                   instructions
     ;
     std.debug.print("{s}", .{message});
-    std.os.exit(1);
+
+    std.process.exit(1);
 }
 
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
@@ -88,7 +90,7 @@ fn get_tag_annotation(allocator: std.mem.Allocator, tagname: []const u8) ![]cons
         tagname,
     };
 
-    const result = try std.ChildProcess.exec(.{
+    const result = try std.process.Child.run(.{
         .allocator = allocator,
         .argv = &args,
     });
@@ -104,30 +106,6 @@ fn get_tag_annotation(allocator: std.mem.Allocator, tagname: []const u8) ![]cons
     return try allocator.dupe(u8, return_string);
 }
 
-/// you need to have checked out the git tag!
-fn getPkgHash(allocator: std.mem.Allocator) ![]const u8 {
-    const cwd = std.fs.cwd();
-    const cwd_absolute_path = try cwd.realpathAlloc(allocator, ".");
-    defer allocator.free(cwd_absolute_path);
-    const hash = blk: {
-        const result = try PkgHash.gitFileList(allocator, cwd_absolute_path);
-        defer allocator.free(result);
-
-        var thread_pool: std.Thread.Pool = undefined;
-        try thread_pool.init(.{ .allocator = allocator });
-        defer thread_pool.deinit();
-
-        break :blk try PkgHash.computePackageHashForFileList(
-            &thread_pool,
-            cwd,
-            result,
-        );
-    };
-
-    const digest = Manifest.hexDigest(hash);
-    return try allocator.dupe(u8, digest[0..]);
-}
-
 const RenderParams = struct {
     tag: ?[]const u8 = null,
     hash: ?[]const u8 = null,
@@ -136,38 +114,37 @@ const RenderParams = struct {
 
 fn renderTemplate(allocator: std.mem.Allocator, template: []const u8, substitutes: RenderParams) ![]const u8 {
     const the_tag = substitutes.tag orelse "";
-    const the_hash = substitutes.hash orelse "";
     const the_anno = substitutes.annotation orelse "";
 
     const s1 = try std.mem.replaceOwned(u8, allocator, template, "{tag}", the_tag);
     defer allocator.free(s1);
-    const s2 = try std.mem.replaceOwned(u8, allocator, s1, "{hash}", the_hash);
-    defer allocator.free(s2);
-    return try std.mem.replaceOwned(u8, allocator, s2, "{annotation}", the_anno);
+    return try std.mem.replaceOwned(u8, allocator, s1, "{annotation}", the_anno);
 }
 
 fn sendToDiscordPart(allocator: std.mem.Allocator, url: []const u8, message_json: []const u8) !void {
     // url
     const uri = try std.Uri.parse(url);
 
-    // http headers
-    var h = std.http.Headers{ .allocator = allocator };
-    defer h.deinit();
-    try h.append("accept", "*/*");
-    try h.append("Content-Type", "application/json");
-
     // client
     var http_client: std.http.Client = .{ .allocator = allocator };
     defer http_client.deinit();
 
+    var server_header_buffer: [2048]u8 = undefined;
+
     // request
-    var req = try http_client.request(.POST, uri, h, .{});
+    var req = try http_client.open(.POST, uri, .{
+        .server_header_buffer = &server_header_buffer,
+        .extra_headers = &.{
+            .{ .name = "accept", .value = "*/*" },
+            .{ .name = "Content-Type", .value = "application/json" },
+        },
+    });
     defer req.deinit();
 
     req.transfer_encoding = .chunked;
 
     // connect, send request
-    try req.start();
+    try req.send();
 
     // send POST payload
     try req.writer().writeAll(message_json);
@@ -182,7 +159,7 @@ fn sendToDiscordPart(allocator: std.mem.Allocator, url: []const u8, message_json
 fn sendToDiscord(allocator: std.mem.Allocator, url: []const u8, message: []const u8) !void {
     // json payload
     // max size: 100kB
-    var buf: []u8 = try allocator.alloc(u8, 100 * 1024);
+    const buf: []u8 = try allocator.alloc(u8, 100 * 1024);
     defer allocator.free(buf);
     var fba = std.heap.FixedBufferAllocator.init(buf);
     var string = std.ArrayList(u8).init(fba.allocator());
@@ -321,12 +298,9 @@ fn sendToDiscord(allocator: std.mem.Allocator, url: []const u8, message: []const
 fn command_announce(allocator: std.mem.Allocator, tag: []const u8) !void {
     const annotation = try get_tag_annotation(allocator, tag);
     defer allocator.free(annotation);
-    const hash = try getPkgHash(allocator);
-    defer allocator.free(hash);
 
     const announcement = try renderTemplate(allocator, RELEASE_ANNOUNCEMENT_TEMPLATE, .{
         .tag = tag,
-        .hash = hash,
         .annotation = annotation,
     });
 
@@ -336,19 +310,16 @@ fn command_announce(allocator: std.mem.Allocator, tag: []const u8) !void {
     defer allocator.free(url);
     sendToDiscord(allocator, url, announcement) catch |err| {
         std.debug.print("HTTP ERROR: {any}\n", .{err});
-        std.os.exit(1);
+        std.process.exit(1);
     };
 }
 
 fn command_releasenotes(allocator: std.mem.Allocator, tag: []const u8) !void {
     const annotation = try get_tag_annotation(allocator, tag);
     defer allocator.free(annotation);
-    const hash = try getPkgHash(allocator);
-    defer allocator.free(hash);
 
     const release_notes = try renderTemplate(allocator, RELEASE_NOTES_TEMPLATE, .{
         .tag = tag,
-        .hash = hash,
         .annotation = annotation,
     });
     defer allocator.free(release_notes);
@@ -357,12 +328,9 @@ fn command_releasenotes(allocator: std.mem.Allocator, tag: []const u8) !void {
 fn command_update_readme(allocator: std.mem.Allocator, tag: []const u8) !void {
     const annotation = try get_tag_annotation(allocator, tag);
     defer allocator.free(annotation);
-    const hash = try getPkgHash(allocator);
-    defer allocator.free(hash);
 
     const update_part = try renderTemplate(allocator, README_UPDATE_TEMPLATE, .{
         .tag = tag,
-        .hash = hash,
         .annotation = annotation,
     });
     defer allocator.free(update_part);
@@ -379,7 +347,7 @@ fn command_update_readme(allocator: std.mem.Allocator, tag: []const u8) !void {
 
     // iterate over lines
     var in_replace_block: bool = false;
-    var line_it = std.mem.split(u8, readme, "\n");
+    var line_it = std.mem.splitScalar(u8, readme, '\n');
     while (line_it.next()) |line| {
         if (in_replace_block) {
             if (std.mem.startsWith(u8, line, REPLACE_END_MARKER)) {
@@ -399,7 +367,7 @@ fn command_update_readme(allocator: std.mem.Allocator, tag: []const u8) !void {
         // we need to put the \n back in.
         // TODO: change this by using some "search" iterator that just
         // returns indices etc
-        var output_line = try std.fmt.allocPrint(allocator, "{s}\n", .{line});
+        const output_line = try std.fmt.allocPrint(allocator, "{s}\n", .{line});
         defer allocator.free(output_line);
         _ = try writer.write(output_line);
     }

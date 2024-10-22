@@ -5,16 +5,16 @@ const zap = @import("zap");
 fn makeRequest(a: std.mem.Allocator, url: []const u8) !void {
     const uri = try std.Uri.parse(url);
 
-    var h = std.http.Headers{ .allocator = a };
-    defer h.deinit();
-
     var http_client: std.http.Client = .{ .allocator = a };
     defer http_client.deinit();
 
-    var req = try http_client.request(.GET, uri, h, .{});
+    var server_header_buffer: [2048]u8 = undefined;
+    var req = try http_client.open(.GET, uri, .{
+        .server_header_buffer = &server_header_buffer,
+    });
     defer req.deinit();
 
-    try req.start();
+    try req.send();
     try req.wait();
 }
 
@@ -27,12 +27,12 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{
         .thread_safe = true,
     }){};
-    var allocator = gpa.allocator();
+    const allocator = gpa.allocator();
 
     const Handler = struct {
         var alloc: std.mem.Allocator = undefined;
 
-        pub fn on_request(r: zap.SimpleRequest) void {
+        pub fn on_request(r: zap.Request) void {
             std.debug.print("\n=====================================================\n", .{});
             defer std.debug.print("=====================================================\n\n", .{});
 
@@ -44,8 +44,29 @@ pub fn main() !void {
             // check for query parameters
             r.parseQuery();
 
-            var param_count = r.getParamCount();
+            const param_count = r.getParamCount();
             std.log.info("param_count: {}", .{param_count});
+
+            // ================================================================
+            // Access RAW params from querystring
+            // ================================================================
+
+            // let's get param "one" by name
+            std.debug.print("\n", .{});
+            if (r.getParamSlice("one")) |value| {
+                std.log.info("Param one = {s}", .{value});
+            } else {
+                std.log.info("Param one not found!", .{});
+            }
+
+            var arg_it = r.getParamSlices();
+            while (arg_it.next()) |param| {
+                std.log.info("ParamStr `{s}` is `{s}`", .{ param.name, param.value });
+            }
+
+            // ================================================================
+            // Access DECODED and typed params
+            // ================================================================
 
             // iterate over all params as strings
             var strparams = r.parametersToOwnedStrList(alloc, false) catch unreachable;
@@ -66,7 +87,7 @@ pub fn main() !void {
 
             // let's get param "one" by name
             std.debug.print("\n", .{});
-            if (r.getParamStr("one", alloc, false)) |maybe_str| {
+            if (r.getParamStr(alloc, "one", false)) |maybe_str| {
                 if (maybe_str) |*s| {
                     defer s.deinit();
 
@@ -82,15 +103,10 @@ pub fn main() !void {
             }
 
             // check if we received a terminate=true parameter
-            if (r.getParamStr("terminate", alloc, false)) |maybe_str| {
-                if (maybe_str) |*s| {
-                    defer s.deinit();
-                    if (std.mem.eql(u8, s.str, "true")) {
-                        zap.fio_stop();
-                    }
+            if (r.getParamSlice("terminate")) |maybe_str| {
+                if (std.mem.eql(u8, maybe_str, "true")) {
+                    zap.stop();
                 }
-            } else |err| {
-                std.log.err("cannot check for terminate param: {any}\n", .{err});
             }
         }
     };
@@ -98,7 +114,7 @@ pub fn main() !void {
     Handler.alloc = allocator;
 
     // setup listener
-    var listener = zap.SimpleHttpListener.init(
+    var listener = zap.HttpListener.init(
         .{
             .port = 3000,
             .on_request = Handler.on_request,
@@ -115,6 +131,6 @@ pub fn main() !void {
     defer thread.join();
     zap.start(.{
         .threads = 1,
-        .workers = 0,
+        .workers = 1,
     });
 }

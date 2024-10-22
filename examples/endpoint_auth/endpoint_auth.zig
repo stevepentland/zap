@@ -11,13 +11,13 @@ const HTTP_RESPONSE: []const u8 =
 ;
 
 // authenticated requests go here
-fn endpoint_http_get(e: *zap.SimpleEndpoint, r: zap.SimpleRequest) void {
+fn endpoint_http_get(e: *zap.Endpoint, r: zap.Request) void {
     _ = e;
     r.sendBody(HTTP_RESPONSE) catch return;
 }
 
 // just for fun, we also catch the unauthorized callback
-fn endpoint_http_unauthorized(e: *zap.SimpleEndpoint, r: zap.SimpleRequest) void {
+fn endpoint_http_unauthorized(e: *zap.Endpoint, r: zap.Request) void {
     _ = e;
     r.setStatus(.unauthorized);
     r.sendBody("UNAUTHORIZED ACCESS") catch return;
@@ -25,7 +25,7 @@ fn endpoint_http_unauthorized(e: *zap.SimpleEndpoint, r: zap.SimpleRequest) void
 
 pub fn main() !void {
     // setup listener
-    var listener = zap.SimpleEndpointListener.init(
+    var listener = zap.Endpoint.Listener.init(
         a,
         .{
             .port = 3000,
@@ -38,22 +38,22 @@ pub fn main() !void {
     defer listener.deinit();
 
     // create mini endpoint
-    var ep = zap.SimpleEndpoint.init(.{
+    var ep = zap.Endpoint.init(.{
         .path = "/test",
         .get = endpoint_http_get,
         .unauthorized = endpoint_http_unauthorized,
     });
 
     // create authenticator
-    const Authenticator = zap.BearerAuthSingle;
+    const Authenticator = zap.Auth.BearerSingle;
     var authenticator = try Authenticator.init(a, token, null);
     defer authenticator.deinit();
 
     // create authenticating endpoint
-    const BearerAuthEndpoint = zap.AuthenticatingEndpoint(Authenticator);
+    const BearerAuthEndpoint = zap.Endpoint.Authenticating(Authenticator);
     var auth_ep = BearerAuthEndpoint.init(&ep, &authenticator);
 
-    try listener.addEndpoint(auth_ep.getEndpoint());
+    try listener.register(auth_ep.endpoint());
 
     listener.listen() catch {};
     std.debug.print(

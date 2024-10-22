@@ -1,10 +1,10 @@
 const std = @import("std");
 const zap = @import("zap");
-const Endpoint = @import("endpoint.zig");
+const UserWeb = @import("userweb.zig");
 const StopEndpoint = @import("stopendpoint.zig");
 
-// this is just to demo that we can catch arbitrary slugs
-fn on_request(r: zap.SimpleRequest) void {
+// this is just to demo that we can catch arbitrary slugs as fallback
+fn on_request(r: zap.Request) void {
     if (r.path) |the_path| {
         std.debug.print("REQUESTED PATH: {s}\n", .{the_path});
     }
@@ -16,12 +16,12 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{
         .thread_safe = true,
     }){};
-    var allocator = gpa.allocator();
+    const allocator = gpa.allocator();
 
     // we scope everything that can allocate within this block for leak detection
     {
         // setup listener
-        var listener = zap.SimpleEndpointListener.init(
+        var listener = zap.Endpoint.Listener.init(
             allocator,
             .{
                 .port = 3000,
@@ -34,19 +34,20 @@ pub fn main() !void {
         );
         defer listener.deinit();
 
-        var endpoint = Endpoint.init(allocator, "/users");
-        defer endpoint.deinit();
+        // /users endpoint
+        var userWeb = UserWeb.init(allocator, "/users");
+        defer userWeb.deinit();
 
         var stopEp = StopEndpoint.init("/stop");
 
-        // add endpoint
-        try listener.addEndpoint(endpoint.getUserEndpoint());
-        try listener.addEndpoint(stopEp.getEndpoint());
+        // register endpoints with the listener
+        try listener.register(userWeb.endpoint());
+        try listener.register(stopEp.endpoint());
 
         // fake some users
         var uid: usize = undefined;
-        uid = try endpoint.getUsers().addByName("renerocksai", null);
-        uid = try endpoint.getUsers().addByName("renerocksai", "your mom");
+        uid = try userWeb.users().addByName("renerocksai", null);
+        uid = try userWeb.users().addByName("renerocksai", "your mom");
 
         // listen
         try listener.listen();
@@ -55,7 +56,7 @@ pub fn main() !void {
 
         // and run
         zap.start(.{
-            .threads = 2000,
+            .threads = 2,
             // IMPORTANT! It is crucial to only have a single worker for this example to work!
             // Multiple workers would have multiple copies of the users hashmap.
             //

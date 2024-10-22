@@ -1,29 +1,22 @@
-
-
 # ⚡zap⚡ - blazingly fast backends in zig
 
-![](https://github.com/zigzap/zap/actions/workflows/build-zig-11.yml/badge.svg) [![Discord](https://img.shields.io/discord/1107835896356675706?label=chat&logo=discord&style=plastic)](https://discord.gg/jQAAN6Ubyj)
+![](https://github.com/zigzap/zap/actions/workflows/build-current-zig.yml/badge.svg) ![](https://github.com/zigzap/zap/actions/workflows/mastercheck.yml/badge.svg) [![Discord](https://img.shields.io/discord/1107835896356675706?label=chat&logo=discord&style=plastic)](https://discord.gg/jQAAN6Ubyj)
 
-Zap is intended to become the [zig](https://ziglang.org) replacement for the
-kind of REST APIs I used to write in [python](https://python.org) with
+Zap is the [zig](https://ziglang.org) replacement for the REST APIs I used to
+write in [python](https://python.org) with
 [Flask](https://flask.palletsprojects.com) and
 [mongodb](https://www.mongodb.com), etc. It can be considered to be a
 microframework for web applications.
 
-What I needed for that was a blazingly fast, robust HTTP server that I could use
-with zig. While facil.io supports TLS, I don't care about HTTPS support. In
-production, I use [nginx](https://www.nginx.com) as a reverse proxy anyway.
+What I needed as a replacement was a blazingly fast and robust HTTP server that
+I could use with Zig, and I chose to wrap the superb evented networking C
+library [facil.io](https://facil.io). Zap wraps and patches [facil.io - the C
+web application framework](https://facil.io).
 
-Zap wraps and patches [facil.io - the C web application
-framework](https://facil.io).
+## **⚡ZAP⚡ IS FAST, ROBUST, AND STABLE**
 
 
-**⚡ZAP⚡ IS SUPER ALPHA**
-
-_Under the hood, everything is super robust and fast. My zig wrappers are fresh,
-juicy, and alpha._
-
-After having used ZAP in production for weeks, I can confidently assert hat it
+After having used ZAP in production for a year, I can confidently assert that it
 proved to be:
 
 - ⚡ **blazingly fast** ⚡
@@ -31,18 +24,58 @@ proved to be:
 
 Exactly the goals I set out to achieve!
 
-Here's what works:
+## FAQ:
 
-- **Super easy build process**: zap's `build.zig` now uses the up-and-coming zig
-  package manager for its C-dependencies, no git submodules anymore.
+- Q: **What version of Zig does Zap support?**
+    - Zap uses the latest stable zig release (0.13.0), so you don't have to keep 
+      up with frequent breaking changes. It's an "LTS feature". 
+- Q: **Can Zap build with Zig's master branch?**
+    - See the `zig-master` branch. An example of how to use it is 
+      [here](https://github.com/zigzap/hello-master). Please note that the 
+      zig-master branch is not the official master branch of ZAP. Be aware that 
+      I don't provide `build.zig.zon` snippets or tagged releases for it for
+      the time being. If you know what you are doing, that shouldn't stop you
+      from using it with zig master though.
+- Q: **Where is the API documentation?**
+    - Docs are a work in progress. You can check them out
+      [here](https://zigzap.org/zap).
+    - Run `zig build run-docserver` to serve them locally.
+- Q: **Does ZAP work on Windows?**
+    - No. This is due to the underlying facil.io C library. Future versions
+      of facil.io might support Windows but there is no timeline yet. Your best
+      options on Windows are WSL2 or a docker container.
+- Q: **Does ZAP support TLS / HTTPS?**
+    - Yes, ZAP supports using the system's openssl. See the
+      [https](./examples/https/https.zig) example and make sure to build with
+      the `-Dopenssl` flag or the environment variable `ZAP_USE_OPENSSL=true`:
+      - `.openssl = true,` (in dependent projects' build.zig,
+        `b.dependency("zap" .{...})`)
+      - `ZAP_USE_OPENSSL=true zig build https`
+      - `zig build -Dopenssl=true https`
+
+## Here's what works
+
+I recommend checking out **Endpoint-based examples for more realistic
+use cases**. Most of the examples are super stripped down to only include
+what's necessary to show a feature.
+
+**NOTE: To see API docs, run `zig build run-docserver`.** To specify a custom
+port and docs dir: `zig build docserver && zig-out/bin/docserver --port=8989
+--docs=path/to/docs`.
+
+- **Super easy build process**: Zap's `build.zig` now uses the new Zig package
+  manager for its C-dependencies, no git submodules anymore.
   - _tested on Linux and macOS (arm, M1)_
 - **[hello](examples/hello/hello.zig)**: welcomes you with some static HTML
 - **[routes](examples/routes/routes.zig)**: a super easy example dispatching on
-  the HTTP path
+  the HTTP path. **NOTE**: The dispatch in the example is a super-basic
+  DIY-style dispatch. See endpoint-based examples for more realistic use cases.
 - **[serve](examples/serve/serve.zig)**: the traditional static web server with
   optional dynamic request handling
 - **[sendfile](examples/sendfile/sendfile.zig)**: simple example of how to send
   a file, honoring compression headers, etc.
+- **[bindataformpost](examples/bindataformpost/bindataformpost.zig)**: example
+  to receive binary files via form post.
 - **[hello_json](examples/hello_json/hello_json.zig)**: serves you json
   dependent on HTTP path
 - **[endpoint](examples/endpoint/)**: a simple JSON REST API example featuring a
@@ -50,6 +83,10 @@ Here's what works:
   users, together with a simple frontend to play with. **It also introduces a
   `/stop` endpoint** that shuts down Zap, so **memory leak detection** can be
   performed in main().
+    - Check out how [main.zig](examples/endpoint/main.zig) uses ZIG's awesome
+      `GeneralPurposeAllocator` to report memory leaks when ZAP is shut down.
+      The [StopEndpoint](examples/endpoint/stopendpoint.zig) just stops ZAP when
+      receiving a request on the `/stop` route.
 - **[mustache](examples/mustache/mustache.zig)**: a simple example using
   [mustache](https://mustache.github.io/) templating.
 - **[endpoint authentication](examples/endpoint_auth/endpoint_auth.zig)**: a
@@ -82,9 +119,9 @@ Here's what works:
   less type-safe than `zap.Middleware`'s use of contexts.
 - [**Per Request Contexts**](./src/zap.zig#L102) : With the introduction of
   `setUserContext()` and `getUserContext()`, you can, of course use those two in
-  projects that don't use `zap.SimpleEndpoint` or `zap.Middleware`, too, if you
+  projects that don't use `zap.Endpoint` or `zap.Middleware`, too, if you
   really, really, absolutely don't find another way to solve your context
-  problem. **We recommend using a `zap.SimpleEndpoint`** inside of a struct that
+  problem. **We recommend using a `zap.Endpoint`** inside of a struct that
   can provide all the context you need **instead**. You get access to your
   struct in the callbacks via the `@fieldParentPtr()` trick that is used
   extensively in Zap's examples, like the [endpoint
@@ -92,6 +129,15 @@ Here's what works:
 - [**Error Trace Responses**](./examples/senderror/senderror.zig): You can now
   call `r.sendError(err, status_code)` when you catch an error and a stack trace
   will be returned to the client / browser.
+- [**HTTPS**](examples/https/https.zig): Shows how easy it is to use facil.io's
+  openssl support. Must be compiled with `-Dopenssl=true` or the environment
+  variable `ZAP_USE_OPENSSL` set to `true` and requires openssl dev dependencies
+  (headers, lib) to be installed on the system.
+  - run it like this: `ZAP_USE_OPENSSL=true zig build run-https`
+    OR like this: `zig build -Dopenssl=true run-https`
+  - it will tell you how to generate certificates
+- [**simple_router**](examples/simple_router/simple_router.zig): See how you
+  can use `zap.Router` to dispatch to handlers by HTTP path.
 
 I'll continue wrapping more of facil.io's functionality and adding stuff to zap
 to a point where I can use it as the JSON REST API backend for real research
@@ -100,29 +146,40 @@ projects, serving thousands of concurrent clients.
 
 ## ⚡blazingly fast⚡
 
-Claiming to be blazingly fast is the new black. At least, zap doesn't slow you
-down and if your server performs poorly, it's probably not exactly zap's fault.
+Claiming to be blazingly fast is the new black. At least, Zap doesn't slow you
+down and if your server performs poorly, it's probably not exactly Zap's fault.
 Zap relies on the [facil.io](https://facil.io) framework and so it can't really
-claim any performance fame for itself. In this initial implementation of zap,
+claim any performance fame for itself. In this initial implementation of Zap,
 I didn't care about optimizations at all.
 
 But, how fast is it? Being blazingly fast is relative. When compared with a
-simple GO HTTP server, a simple zig zap HTTP server performed really good on my
+simple GO HTTP server, a simple Zig Zap HTTP server performed really good on my
 machine (x86_64-linux):
 
-- zig zap was nearly 30% faster than GO
-- zig zap had over 50% more throughput than GO
+- Zig Zap was nearly 30% faster than GO
+- Zig Zap had over 50% more throughput than GO
 
 **Update**: Thanks to @felipetrz, I got to test against more realistic Python
 and Rust examples. Both python `sanic` and rust `axum` were easy enough to
 integrate.
 
-![](wrk_table_summary.png)
+**Update**: I have automated the benchmarks. See
+[blazingly-fast.md](./blazingly-fast.md) for more information. Also, thanks to
+@alexpyattaev, the benchmarks are fairer now, pinning server and client to
+specific CPU cores.
 
-![](wrk_charts_summary.png)
+**Update**: I have consolidated the benchmarks to one good representative per
+language. See more details in [blazingly-fast.md](./blazingly-fast.md). It
+contains rust implementations that come pretty close to Zap's performance in the
+simplistic testing scenario.
+
+![](./wrk/samples/README_req_per_sec.png)
+
+![](./wrk/samples/README_xfer_per_sec.png)
+
 
 So, being somewhere in the ballpark of basic GO performance, zig zap seems to be
-... of reasonable performance 😎. 
+... of reasonable performance 😎.
 
 I can rest my case that developing ZAP was a good idea because it's faster than
 both alternatives: a) staying with Python, and b) creating a GO + Zig hybrid.
@@ -132,7 +189,7 @@ See more details in [blazingly-fast.md](blazingly-fast.md).
 ## 💪 Robust
 
 ZAP is **very robust**. In fact, it is so robust that I was confidently able to
-only work with in-memory data (RAM) in all my initial ZAP projects so far: 3
+only work with in-memory data (RAM) in all my ZAP projects so far: over 5 large
 online research experiments. No database, no file persistence, until I hit
 "save" at the end 😊.
 
@@ -144,8 +201,8 @@ low, it means the system is under (heavy) load. Would you confidently NOT save
 data when load is high and the data changes most frequently -> the potential
 data loss is maximized?
 
-To answer that question, I just skipped it. I skipped saving data until
-receiving a "save" signal. And it worked. ZAP kept on zapping. When
+To answer that question, I just skipped it. I skipped saving any data until
+receiving a "save" signal via API. And it worked. ZAP just kept on zapping. When
 traffic calmed down or all experiment participants had finished, I hit "save"
 and went on analyzing the data.
 
@@ -171,7 +228,7 @@ code leaks memory.
 
 ## Getting started
 
-Make sure you have **the latest zig release (0.11.0)** installed. Fetch it from
+Make sure you have **zig 0.13.0** installed. Fetch it from
 [here](https://ziglang.org/download).
 
 ```shell
@@ -185,66 +242,54 @@ $ # open http://localhost:3000 in your browser
 
 ## Using ⚡zap⚡ in your own projects
 
-Make sure you have **the latest zig release (0.11.0)** installed. Fetch it from
+Make sure you have **the latest zig release (0.13.0)** installed. Fetch it from
 [here](https://ziglang.org/download).
 
 If you don't have an existing zig project, create one like this:
 
 ```shell
 $ mkdir zaptest && cd zaptest
-$ zig init-exe
+$ zig init
 $ git init      ## (optional)
 ```
-**Note 1**: Zap is developed with zig master. This version of zig has the
-package management features in place that are used in the following
-instructions. Nix users are lucky; you can use the existing `flake.nix` and run
-`nix develop` to get a development shell providing zig, and also all
-dependencies to build the and run the GO, python, and rust examples for the
-`wrk` performance tests. For mere building, `nix develop .#build` will only
-fetch zig master.
+**Note**: Nix/NixOS users are lucky; you can use the existing `flake.nix` and run
+`nix develop` to get a development shell providing zig and all
+dependencies to build and run the GO, python, and rust examples for the
+`wrk` performance tests. For the mere building of zap projects,
+`nix develop .#build` will only fetch zig 0.11.0. TODO: upgrade to latest zig.
 
-With an existing zig project, adding zap to it is easy:
+With an existing Zig project, adding Zap to it is easy:
 
 1. Add zap to your `build.zig.zon`
 2. Add zap to your `build.zig`
 
-To add zap to `build.zig.zon`:
+In your zig project folder (where `build.zig` is located), run:
 
 <!-- INSERT_DEP_BEGIN -->
-```zig
-.{
-    .name = "My example project",
-    .version = "0.0.1",
-
-    .dependencies = .{
-        // zap v0.1.10-pre
-        .zap = .{
-            .url = "https://github.com/zigzap/zap/archive/refs/tags/v0.1.10-pre.tar.gz",
-            .hash = "1220a645e8ae84064f3342609f65d1c97e23c292616f5d1040cdf314ca52d7643f8a",
-        }
-    }
-}
+```
+zig fetch --save "git+https://github.com/zigzap/zap#v0.9.1"
 ```
 <!-- INSERT_DEP_END -->
 
 Then, in your `build.zig`'s `build` function, add the following before
-`b.installArtifact(exe)``:
+`b.installArtifact(exe)`:
 
 ```zig
     const zap = b.dependency("zap", .{
         .target = target,
         .optimize = optimize,
+        .openssl = false, // set to true to enable TLS support
     });
-    exe.addModule("zap", zap.module("zap"));
-    exe.linkLibrary(zap.artifact("facil.io"));
+
+    exe.root_module.addImport("zap", zap.module("zap"));
 ```
 
-From then on, you can use the zap package in your project. Check out the
-examples to see how to use zap.
+From then on, you can use the Zap package in your project. Check out the
+examples to see how to use Zap.
 
 ## Updating your project to the latest version of zap
 
-You can change the URL to zap in your `build.zig.zon`
+You can change the URL to Zap in your `build.zig.zon`
 
 - easiest: use a tagged release
 - or to one of the tagged versions, e.g. `0.0.9`
@@ -256,41 +301,9 @@ Go to the [release page](https://github.com/zigzap/zap/releases). Every release
 will state its version number and also provide instructions for changing
 `build.zig.zon` and `build.zig`.
 
-### Using a tagged version
+### Using other versions
 
-Go to [to the tags page](https://github.com/zigzap/zap/tags) to view all
-available tagged versions of zap. From there, right click on the `tar.gz` link
-to copy the URL to put into your `build.zig.zon`.
-
-After changing the `.url` field, you will get an error like this at the next
-attempt to `zig build`:
-
-```
-.../build.zig.zon:8:21: error: hash mismatch:
-expected: 12205fd0b60720fb2a40d82118ee75c15cb5589bb9faf901c8a39a93551dd6253049,
-found: 1220f4ea8be4a85716ae1362d34c077dca10f10d1baf9196fc890e658c56f78b7424
-.hash = "12205fd0b60720fb2a40d82118ee75c15cb5589bb9faf901c8a39a93551dd6253049",
-^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-```
-
-**Note:** If you don't get this error, clean your global zig cache: `rm -fr
-~/.cache/zig`. This shouldn't happen with current zig master anymore.
-
-With the new URL, the old hash in the `build.zig.zon` is no longer valid. You
-need to take the hash value displayed after `found: ` in the error message as
-the `.hash` value in `build.zig.zon`.
-
-
-### Using an arbitrary (last) commit
-
-Use the same workflow as above for tags, excpept for the URL, use this schema:
-
-```zig
-.url = "https://github.com/zigzap/zap/archive/[COMMIT-HASH].tar.gz",
-```
-
-Replace `[COMMIT-HASH]` with the full commit hash as provided, e.g. by `git
-log`.
+See [here](./doc/other-versions.md).
 
 ## Contribute to ⚡zap⚡ - blazingly fast
 
@@ -330,7 +343,8 @@ $ zig build [EXAMPLE]
 $ ./zig-out/bin/[EXAMPLE]
 ```
 
-... where `[EXAMPLE]` is one of `hello`, `routes`, or `serve`.
+... where `[EXAMPLE]` is one of `hello`, `routes`, `serve`, ... see the [list of
+examples above](#heres-what-works).
 
 Example: building and running the hello example:
 
@@ -357,7 +371,7 @@ $ zig build run-routes
 const std = @import("std");
 const zap = @import("zap");
 
-fn on_request(r: zap.SimpleRequest) void {
+fn on_request(r: zap.Request) void {
     if (r.path) |the_path| {
         std.debug.print("PATH: {s}\n", .{the_path});
     }
@@ -369,7 +383,7 @@ fn on_request(r: zap.SimpleRequest) void {
 }
 
 pub fn main() !void {
-    var listener = zap.SimpleHttpListener.init(.{
+    var listener = zap.HttpListener.init(.{
         .port = 3000,
         .on_request = on_request,
         .log = true,
@@ -385,11 +399,6 @@ pub fn main() !void {
     });
 }
 ```
-
-
-
-
-
 
 
 

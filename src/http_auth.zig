@@ -1,6 +1,7 @@
 const std = @import("std");
 const zap = @import("zap.zig");
 
+/// Authentication Scheme enum: Basic or Bearer.
 pub const AuthScheme = enum {
     Basic,
     Bearer,
@@ -27,6 +28,7 @@ pub const AuthScheme = enum {
     }
 };
 
+/// Used internally: check for presence of the requested auth header.
 pub fn checkAuthHeader(scheme: AuthScheme, auth_header: []const u8) bool {
     return switch (scheme) {
         .Basic => |b| std.mem.startsWith(u8, auth_header, b.str()) and auth_header.len > b.str().len,
@@ -34,13 +36,15 @@ pub fn checkAuthHeader(scheme: AuthScheme, auth_header: []const u8) bool {
     };
 }
 
-pub fn extractAuthHeader(scheme: AuthScheme, r: *const zap.SimpleRequest) ?[]const u8 {
+/// Used internally: return the requested auth header.
+pub fn extractAuthHeader(scheme: AuthScheme, r: *const zap.Request) ?[]const u8 {
     return switch (scheme) {
         .Basic => |b| r.getHeader(b.headerFieldStrFio()),
         .Bearer => |b| r.getHeader(b.headerFieldStrFio()),
     };
 }
 
+/// Decoding Strategy for Basic Authentication
 const BasicAuthStrategy = enum {
     /// decode into user and pass, then check pass
     UserPass,
@@ -48,20 +52,21 @@ const BasicAuthStrategy = enum {
     Token68,
 };
 
+/// Authentication result
 pub const AuthResult = enum {
     /// authentication / authorization was successful
     AuthOK,
     /// authentication / authorization failed
     AuthFailed,
-    /// the authenticator handled the request that didn't pass authentication /
-    /// authorization .
-    /// this is used to implement authenticators that redirect to a login
-    /// page. An AuthenticatingEndpoint will not do the default, which is trying
-    /// to call the `unauthorized` callback or.
+    /// The authenticator handled the request that didn't pass authentication /
+    /// authorization.
+    /// This is used to implement authenticators that redirect to a login
+    /// page. An Authenticating endpoint will not do the default, which is trying
+    /// to call the `unauthorized` callback if one exists orelse ignore the request.
     Handled,
 };
 
-/// HTTP Basic Authentication RFC 7617
+/// HTTP Basic Authentication RFC 7617.
 /// "Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="
 /// user-pass strings: "$username:$password" -> base64
 ///
@@ -73,10 +78,9 @@ pub const AuthResult = enum {
 /// Errors:
 /// WWW-Authenticate: Basic realm="this"
 ///
-/// T : any kind of map that implements get([]const u8) -> []const u8
-pub fn BasicAuth(comptime Lookup: type, comptime kind: BasicAuthStrategy) type {
+/// Lookup : any kind of map that implements get([]const u8) -> []const u8
+pub fn Basic(comptime Lookup: type, comptime kind: BasicAuthStrategy) type {
     return struct {
-        // kind: BasicAuthStrategy,
         allocator: std.mem.Allocator,
         realm: ?[]const u8,
         lookup: *Lookup,
@@ -87,23 +91,24 @@ pub fn BasicAuth(comptime Lookup: type, comptime kind: BasicAuthStrategy) type {
         /// different implementations can
         ///   - either decode, lookup and compare passwords
         ///   - or just check for existence of the base64-encoded user:pass combination
-        /// if realm is provided (not null), a copy is taken -> call deinit() to clean up
+        /// if realm is provided (not null), a copy of it is taken -> call deinit() to clean up
         pub fn init(allocator: std.mem.Allocator, lookup: *Lookup, realm: ?[]const u8) !Self {
             return .{
-                // .kind = kind,
                 .allocator = allocator,
                 .lookup = lookup,
                 .realm = if (realm) |the_realm| try allocator.dupe(u8, the_realm) else null,
             };
         }
 
+        /// Deinit the authenticator.
         pub fn deinit(self: *Self) void {
             if (self.realm) |the_realm| {
                 self.allocator.free(the_realm);
             }
         }
 
-        /// Use this to decode the auth_header into user:pass, lookup pass in lookup
+        /// Use this to decode the auth_header into user:pass, lookup pass in lookup.
+        /// Note: usually, you don't want to use this; you'd go for `authenticateRequest()`.
         pub fn authenticateUserPass(self: *Self, auth_header: []const u8) AuthResult {
             zap.debug("AuthenticateUserPass\n", .{});
             const encoded = auth_header[AuthScheme.Basic.str().len..];
@@ -117,7 +122,7 @@ pub fn BasicAuth(comptime Lookup: type, comptime kind: BasicAuthStrategy) type {
                     );
                     return .AuthFailed;
                 }
-                var decoded = buffer[0..decoded_size];
+                const decoded = buffer[0..decoded_size];
                 decoder.decode(decoded, encoded) catch |err| {
                     zap.debug(
                         "ERROR: UserPassAuth: unable to decode `{s}`: {any}\n",
@@ -127,7 +132,7 @@ pub fn BasicAuth(comptime Lookup: type, comptime kind: BasicAuthStrategy) type {
                 };
                 // we have decoded
                 // we can split
-                var it = std.mem.split(u8, decoded, ":");
+                var it = std.mem.splitScalar(u8, decoded, ':');
                 const user = it.next();
                 const pass = it.next();
                 if (user == null or pass == null) {
@@ -165,22 +170,28 @@ pub fn BasicAuth(comptime Lookup: type, comptime kind: BasicAuthStrategy) type {
             return .AuthFailed;
         }
 
-        /// Use this to just look up if the base64-encoded auth_header exists in lookup
+        /// Use this to just look up if the base64-encoded auth_header exists in lookup.
+        /// Note: usually, you don't want to use this; you'd go for `authenticateRequest()`.
         pub fn authenticateToken68(self: *Self, auth_header: []const u8) AuthResult {
             const token = auth_header[AuthScheme.Basic.str().len..];
             return if (self.lookup.*.contains(token)) .AuthOK else .AuthFailed;
         }
 
-        // dispatch based on kind
+        /// dispatch based on kind (.UserPass / .Token689) and try to authenticate based on the header.
+        /// Note: usually, you don't want to use this; you'd go for `authenticateRequest()`.
         pub fn authenticate(self: *Self, auth_header: []const u8) AuthResult {
             zap.debug("AUTHENTICATE\n", .{});
-            // switch (self.kind) {
             switch (kind) {
                 .UserPass => return self.authenticateUserPass(auth_header),
                 .Token68 => return self.authenticateToken68(auth_header),
             }
         }
-        pub fn authenticateRequest(self: *Self, r: *const zap.SimpleRequest) AuthResult {
+
+        /// The zap authentication request handler.
+        ///
+        /// Tries to extract the authentication header and perform the authentication.
+        /// If no authentication header is found, an authorization header is tried.
+        pub fn authenticateRequest(self: *Self, r: *const zap.Request) AuthResult {
             zap.debug("AUTHENTICATE REQUEST\n", .{});
             if (extractAuthHeader(.Basic, r)) |auth_header| {
                 zap.debug("Authentication Header found!\n", .{});
@@ -208,17 +219,16 @@ pub fn BasicAuth(comptime Lookup: type, comptime kind: BasicAuthStrategy) type {
 /// Errors:
 /// HTTP/1.1 401 Unauthorized
 /// WWW-Authenticate: Bearer realm="example", error="invalid_token", error_description="..."
-pub const BearerAuthSingle = struct {
+pub const BearerSingle = struct {
     allocator: std.mem.Allocator,
     token: []const u8,
     realm: ?[]const u8,
 
     const Self = @This();
 
-    /// Creates a Single-Token Bearer Authenticator
-    /// takes a copy of the token
-    /// if realm is provided (not null), a copy is taken
-    /// call deinit() to clean up
+    /// Creates a Single-Token Bearer Authenticator.
+    /// Takes a copy of the token.
+    /// If realm is provided (not null), a copy is taken call deinit() to clean up.
     pub fn init(allocator: std.mem.Allocator, token: []const u8, realm: ?[]const u8) !Self {
         return .{
             .allocator = allocator,
@@ -226,6 +236,9 @@ pub const BearerAuthSingle = struct {
             .realm = if (realm) |the_realm| try allocator.dupe(u8, the_realm) else null,
         };
     }
+
+    /// Try to authenticate based on the header.
+    /// Note: usually, you don't want to use this; you'd go for `authenticateRequest()`.
     pub fn authenticate(self: *Self, auth_header: []const u8) AuthResult {
         if (checkAuthHeader(.Bearer, auth_header) == false) {
             return .AuthFailed;
@@ -234,13 +247,17 @@ pub const BearerAuthSingle = struct {
         return if (std.mem.eql(u8, token, self.token)) .AuthOK else .AuthFailed;
     }
 
-    pub fn authenticateRequest(self: *Self, r: *const zap.SimpleRequest) AuthResult {
+    /// The zap authentication request handler.
+    ///
+    /// Tries to extract the authentication header and perform the authentication.
+    pub fn authenticateRequest(self: *Self, r: *const zap.Request) AuthResult {
         if (extractAuthHeader(.Bearer, r)) |auth_header| {
             return self.authenticate(auth_header);
         }
         return .AuthFailed;
     }
 
+    /// Deinits the authenticator.
     pub fn deinit(self: *Self) void {
         if (self.realm) |the_realm| {
             self.allocator.free(the_realm);
@@ -259,7 +276,7 @@ pub const BearerAuthSingle = struct {
 /// Errors:
 /// HTTP/1.1 401 Unauthorized
 /// WWW-Authenticate: Bearer realm="example", error="invalid_token", error_description="..."
-pub fn BearerAuthMulti(comptime Lookup: type) type {
+pub fn BearerMulti(comptime Lookup: type) type {
     return struct {
         allocator: std.mem.Allocator,
         lookup: *Lookup,
@@ -267,9 +284,9 @@ pub fn BearerAuthMulti(comptime Lookup: type) type {
 
         const Self = @This();
 
-        /// Creates a BasicAuth. `lookup` must implement `.get([]const u8) -> []const u8`
-        /// to look up tokens
-        /// if realm is provided (not null), a copy is taken -> call deinit() to clean up
+        /// Creates a Multi Token Bearer Authenticator. `lookup` must implement
+        /// `.get([]const u8) -> []const u8` to look up tokens.
+        /// If realm is provided (not null), a copy of it is taken -> call deinit() to clean up.
         pub fn init(allocator: std.mem.Allocator, lookup: *Lookup, realm: ?[]const u8) !Self {
             return .{
                 .allocator = allocator,
@@ -278,12 +295,16 @@ pub fn BearerAuthMulti(comptime Lookup: type) type {
             };
         }
 
+        /// Deinit the authenticator. Only required if a realm was provided at
+        /// init() time.
         pub fn deinit(self: *Self) void {
             if (self.realm) |the_realm| {
                 self.allocator.free(the_realm);
             }
         }
 
+        /// Try to authenticate based on the header.
+        /// Note: usually, you don't want to use this; you'd go for `authenticateRequest()`.
         pub fn authenticate(self: *Self, auth_header: []const u8) AuthResult {
             if (checkAuthHeader(.Bearer, auth_header) == false) {
                 return .AuthFailed;
@@ -292,7 +313,10 @@ pub fn BearerAuthMulti(comptime Lookup: type) type {
             return if (self.lookup.*.contains(token)) .AuthOK else .AuthFailed;
         }
 
-        pub fn authenticateRequest(self: *Self, r: *const zap.SimpleRequest) AuthResult {
+        /// The zap authentication request handler.
+        ///
+        /// Tries to extract the authentication header and perform the authentication.
+        pub fn authenticateRequest(self: *Self, r: *const zap.Request) AuthResult {
             if (extractAuthHeader(.Bearer, r)) |auth_header| {
                 return self.authenticate(auth_header);
             }
@@ -301,14 +325,15 @@ pub fn BearerAuthMulti(comptime Lookup: type) type {
     };
 }
 
-pub const UserPassSessionAuthArgs = struct {
+/// Settings to initialize a UserPassSession authenticator.
+pub const UserPassSessionArgs = struct {
     /// username body parameter
     usernameParam: []const u8,
     /// password body parameter
     passwordParam: []const u8,
     /// redirect to this page if auth fails
     loginPage: []const u8,
-    /// name of the cookie
+    /// name of the auth cookie
     cookieName: []const u8,
     /// cookie max age in seconds; 0 -> session cookie
     cookieMaxAge: u8 = 0,
@@ -316,7 +341,7 @@ pub const UserPassSessionAuthArgs = struct {
     redirectCode: zap.StatusCode = .found,
 };
 
-/// UserPassSessionAuth supports the following use case:
+/// UserPassSession supports the following use case:
 ///
 /// - checks every request: is it going to the login page? -> let the request through.
 /// - else:
@@ -330,10 +355,10 @@ pub const UserPassSessionAuthArgs = struct {
 ///
 /// Please note the implications of this simple approach: IF YOU REUSE "username"
 /// and "password" body params for anything else in your application, then the
-/// mechanisms described above will kick in. For that reason: please know what you're
-/// doing.
+/// mechanisms described above will still kick in. For that reason: please know what
+/// you're doing.
 ///
-/// See UserPassSessionAuthArgs:
+/// See UserPassSessionArgs:
 /// - username & password param names can be defined by you
 /// - session cookie name and max-age can be defined by you
 /// - login page and redirect code (.302) can be defined by you
@@ -351,13 +376,13 @@ pub const UserPassSessionAuthArgs = struct {
 ///       -> another browser program with the page still open would still be able to use
 ///       -> the session. Which is kindof OK, but not as cool as erasing the token
 ///       -> on the server side which immediately block all other browsers as well.
-pub fn UserPassSessionAuth(comptime Lookup: type, comptime lockedPwLookups: bool) type {
+pub fn UserPassSession(comptime Lookup: type, comptime lockedPwLookups: bool) type {
     return struct {
         allocator: std.mem.Allocator,
         lookup: *Lookup,
-        settings: UserPassSessionAuthArgs,
+        settings: UserPassSessionArgs,
 
-        // TODO: cookie store per user
+        // TODO: cookie store per user?
         sessionTokens: SessionTokenMap,
         passwordLookupLock: std.Thread.Mutex = .{},
         tokenLookupLock: std.Thread.Mutex = .{},
@@ -368,12 +393,14 @@ pub fn UserPassSessionAuth(comptime Lookup: type, comptime lockedPwLookups: bool
 
         const Token = [Hash.digest_length * 2]u8;
 
+        /// Construct this authenticator. See above and related types for more
+        /// information.
         pub fn init(
             allocator: std.mem.Allocator,
             lookup: *Lookup,
-            args: UserPassSessionAuthArgs,
+            args: UserPassSessionArgs,
         ) !Self {
-            var ret: Self = .{
+            const ret: Self = .{
                 .allocator = allocator,
                 .settings = .{
                     .usernameParam = try allocator.dupe(u8, args.usernameParam),
@@ -390,6 +417,7 @@ pub fn UserPassSessionAuth(comptime Lookup: type, comptime lockedPwLookups: bool
             return ret;
         }
 
+        /// De-init this authenticator.
         pub fn deinit(self: *Self) void {
             self.allocator.free(self.settings.usernameParam);
             self.allocator.free(self.settings.passwordParam);
@@ -405,8 +433,9 @@ pub fn UserPassSessionAuth(comptime Lookup: type, comptime lockedPwLookups: bool
         }
 
         /// Check for session token cookie, remove the token from the valid tokens
-        pub fn logout(self: *Self, r: *const zap.SimpleRequest) void {
-            // we  erase the list of valid tokens server-side
+        pub fn logout(self: *Self, r: *const zap.Request) void {
+            // we  erase the list of valid tokens server-side (later) and set the
+            // cookie to "invalid" on the client side.
             if (r.setCookie(.{
                 .name = self.settings.cookieName,
                 .value = "invalid",
@@ -420,7 +449,7 @@ pub fn UserPassSessionAuth(comptime Lookup: type, comptime lockedPwLookups: bool
             r.parseCookies(false);
 
             // check for session cookie
-            if (r.getCookieStr(self.settings.cookieName, self.allocator, false)) |maybe_cookie| {
+            if (r.getCookieStr(self.allocator, self.settings.cookieName, false)) |maybe_cookie| {
                 if (maybe_cookie) |cookie| {
                     defer cookie.deinit();
                     self.tokenLookupLock.lock();
@@ -435,11 +464,11 @@ pub fn UserPassSessionAuth(comptime Lookup: type, comptime lockedPwLookups: bool
                     }
                 }
             } else |err| {
-                zap.debug("unreachable: UserPassSessionAuth.logout: {any}", .{err});
+                zap.debug("unreachable: UserPassSession.logout: {any}", .{err});
             }
         }
 
-        fn _internal_authenticateRequest(self: *Self, r: *const zap.SimpleRequest) AuthResult {
+        fn _internal_authenticateRequest(self: *Self, r: *const zap.Request) AuthResult {
             // if we're requesting the login page, let the request through
             if (r.path) |p| {
                 if (std.mem.startsWith(u8, p, self.settings.loginPage)) {
@@ -449,14 +478,14 @@ pub fn UserPassSessionAuth(comptime Lookup: type, comptime lockedPwLookups: bool
 
             // parse body
             r.parseBody() catch {
-                // zap.debug("warning: parseBody() failed in UserPassSessionAuth: {any}", .{err});
+                // zap.debug("warning: parseBody() failed in UserPassSession: {any}", .{err});
                 // this is not an error in case of e.g. gets with querystrings
             };
 
             r.parseCookies(false);
 
             // check for session cookie
-            if (r.getCookieStr(self.settings.cookieName, self.allocator, false)) |maybe_cookie| {
+            if (r.getCookieStr(self.allocator, self.settings.cookieName, false)) |maybe_cookie| {
                 if (maybe_cookie) |cookie| {
                     defer cookie.deinit();
                     // locked or unlocked token lookup
@@ -474,14 +503,14 @@ pub fn UserPassSessionAuth(comptime Lookup: type, comptime lockedPwLookups: bool
                     }
                 }
             } else |err| {
-                zap.debug("unreachable: could not check for cookie in UserPassSessionAuth: {any}", .{err});
+                zap.debug("unreachable: could not check for cookie in UserPassSession: {any}", .{err});
             }
 
             // get params of username and password
-            if (r.getParamStr(self.settings.usernameParam, self.allocator, false)) |maybe_username| {
+            if (r.getParamStr(self.allocator, self.settings.usernameParam, false)) |maybe_username| {
                 if (maybe_username) |*username| {
                     defer username.deinit();
-                    if (r.getParamStr(self.settings.passwordParam, self.allocator, false)) |maybe_pw| {
+                    if (r.getParamStr(self.allocator, self.settings.passwordParam, false)) |maybe_pw| {
                         if (maybe_pw) |*pw| {
                             defer pw.deinit();
 
@@ -519,18 +548,21 @@ pub fn UserPassSessionAuth(comptime Lookup: type, comptime lockedPwLookups: bool
                             }
                         }
                     } else |err| {
-                        zap.debug("getParamSt() for password failed in UserPassSessionAuth: {any}", .{err});
+                        zap.debug("getParamSt() for password failed in UserPassSession: {any}", .{err});
                         return .AuthFailed;
                     }
                 }
             } else |err| {
-                zap.debug("getParamSt() for user failed in UserPassSessionAuth: {any}", .{err});
+                zap.debug("getParamSt() for user failed in UserPassSession: {any}", .{err});
                 return .AuthFailed;
             }
             return .AuthFailed;
         }
 
-        pub fn authenticateRequest(self: *Self, r: *const zap.SimpleRequest) AuthResult {
+        /// The zap authentication request handler.
+        ///
+        /// See above for how it works.
+        pub fn authenticateRequest(self: *Self, r: *const zap.Request) AuthResult {
             switch (self._internal_authenticateRequest(r)) {
                 .AuthOK => {
                     // username and pass are ok -> created token, set header, caller can continue
@@ -543,14 +575,14 @@ pub fn UserPassSessionAuth(comptime Lookup: type, comptime lockedPwLookups: bool
                     // we need to redirect and return .Handled
                     self.redirect(r) catch |err| {
                         // we just give up
-                        zap.debug("redirect() failed in UserPassSessionAuth: {any}", .{err});
+                        zap.debug("redirect() failed in UserPassSession: {any}", .{err});
                     };
                     return .Handled;
                 },
             }
         }
 
-        fn redirect(self: *Self, r: *const zap.SimpleRequest) !void {
+        fn redirect(self: *Self, r: *const zap.Request) !void {
             try r.redirectTo(self.settings.loginPage, self.settings.redirectCode);
         }
 

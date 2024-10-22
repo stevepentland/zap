@@ -6,9 +6,8 @@ const User = struct {
     last_name: ?[]const u8 = null,
 };
 
-fn on_request(r: zap.SimpleRequest) void {
-    if (!std.mem.eql(u8, r.method.?, "GET"))
-        return;
+fn on_request(r: zap.Request) void {
+    if (r.methodAsEnum() != .GET) return;
 
     // /user/n
     if (r.path) |the_path| {
@@ -27,6 +26,7 @@ fn on_request(r: zap.SimpleRequest) void {
         }
         std.debug.print("<< json: {s}\n", .{json_to_send});
         r.setContentType(.JSON) catch return;
+        r.setContentTypeFromFilename("test.json") catch return;
         r.sendBody(json_to_send) catch return;
     }
 }
@@ -41,9 +41,9 @@ fn setupUserData(a: std.mem.Allocator) !void {
 }
 
 pub fn main() !void {
-    var a = std.heap.page_allocator;
+    const a = std.heap.page_allocator;
     try setupUserData(a);
-    var listener = zap.SimpleHttpListener.init(.{
+    var listener = zap.HttpListener.init(.{
         .port = 3000,
         .on_request = on_request,
         .log = false,
@@ -63,6 +63,6 @@ pub fn main() !void {
     // start worker threads
     zap.start(.{
         .threads = 2,
-        .workers = 2,
+        .workers = 1, // user map cannot be shared among multiple worker processes
     });
 }

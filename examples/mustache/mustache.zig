@@ -1,15 +1,26 @@
 const std = @import("std");
 const zap = @import("zap");
+const Mustache = @import("zap").Mustache;
 
-fn on_request(r: zap.SimpleRequest) void {
-    const template = "{{=<< >>=}}* Users:\r\n<<#users>><<id>>. <<& name>> (<<name>>)\r\n<</users>>\r\nNested: <<& nested.item >>.";
-    const p = zap.MustacheNew(template) catch return;
-    defer zap.MustacheFree(p);
+fn on_request(r: zap.Request) void {
+    const template =
+        \\ {{=<< >>=}}
+        \\ * Users:
+        \\ <<#users>>
+        \\ <<id>>. <<& name>> (<<name>>)
+        \\ <</users>>
+        \\ Nested: <<& nested.item >>.
+    ;
+
+    var mustache = Mustache.fromData(template) catch return;
+    defer mustache.deinit();
+
     const User = struct {
         name: []const u8,
         id: isize,
     };
-    const ret = zap.MustacheBuild(p, .{
+
+    const ret = mustache.build(.{
         .users = [_]User{
             .{
                 .name = "Rene",
@@ -25,11 +36,12 @@ fn on_request(r: zap.SimpleRequest) void {
         },
     });
     defer ret.deinit();
+
     if (r.setContentType(.TEXT)) {
         if (ret.str()) |s| {
             r.sendBody(s) catch return;
         } else {
-            r.sendBody("<html><body><h1>MustacheBuild() failed!</h1></body></html>") catch return;
+            r.sendBody("<html><body><h1>mustacheBuild() failed!</h1></body></html>") catch return;
         }
     } else |err| {
         std.debug.print("Error while setting content type: {}\n", .{err});
@@ -37,7 +49,7 @@ fn on_request(r: zap.SimpleRequest) void {
 }
 
 pub fn main() !void {
-    var listener = zap.SimpleHttpListener.init(.{
+    var listener = zap.HttpListener.init(.{
         .port = 3000,
         .on_request = on_request,
         .log = true,

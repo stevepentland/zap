@@ -1,30 +1,41 @@
 name: Works with Zig master
-on: 
-  #   push:
-  #     branches:
-  #     - master
-  #   pull_request:
-  #     branches:
-  #     - master
-  #   schedule:
-  #     - cron: "0 0 * * *"
-  workflow_dispatch:
-  
+on:
+    push:
+      branches:
+      - zig-master
+    pull_request:
+      branches:
+      - zig-master
+    schedule:
+      - cron: "0 0 * * *"
+    workflow_dispatch:
+
 jobs:
   ci:
     strategy:
       matrix:
-        # platform: [ubuntu-latest, windows-latest, macos-latest]
-        platform: [ubuntu-latest]
+        platform: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v3
+        with:
+          ref: zig-master
       - uses: goto-bus-stop/setup-zig@v2
         with:
           version: master
       - name: Check zig version
         run: zig version
       - name: Build all examples
-        run: ./build_all.sh
-      - name: Run all tests
-        run: zig build test
+        run: zig build all
+      # Run tests separately so we can see more clearly which one fails
+      - name: Run mustache tests
+        run: zig build test-mustache
+      - name: Run httpparams tests
+        run: zig build test-httpparams
+      - name: Run sendfile tests
+        run: zig build test-sendfile
+      - name: Run authentication tests
+        run: zig build test-authentication
+      - name: Report end of tests
+        run: echo "tests finished"
+

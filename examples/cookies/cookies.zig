@@ -5,17 +5,19 @@ const zap = @import("zap");
 fn makeRequest(a: std.mem.Allocator, url: []const u8) !void {
     const uri = try std.Uri.parse(url);
 
-    var h = std.http.Headers{ .allocator = a };
-    defer h.deinit();
-
     var http_client: std.http.Client = .{ .allocator = a };
     defer http_client.deinit();
 
-    var req = try http_client.request(.GET, uri, h, .{});
+    var server_header_buffer: [2048]u8 = undefined;
+    var req = try http_client.open(.GET, uri, .{
+        .server_header_buffer = &server_header_buffer,
+        .extra_headers = &.{
+            .{ .name = "cookie", .value = "ZIG_ZAP=awesome" },
+        },
+    });
     defer req.deinit();
 
-    try req.headers.append("cookie", "ZIG_ZAP=awesome");
-    try req.start();
+    try req.send();
     try req.wait();
 }
 
@@ -28,26 +30,28 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{
         .thread_safe = true,
     }){};
-    var allocator = gpa.allocator();
+    const allocator = gpa.allocator();
 
     const Handler = struct {
         var alloc: std.mem.Allocator = undefined;
 
-        pub fn on_request(r: zap.SimpleRequest) void {
+        pub fn on_request(r: zap.Request) void {
             std.debug.print("\n=====================================================\n", .{});
             defer std.debug.print("=====================================================\n\n", .{});
 
-            r.parseCookies(false);
+            r.parseCookies(false); // url_encoded = false
 
-            var cookie_count = r.getCookiesCount();
+            const cookie_count = r.getCookiesCount();
             std.log.info("cookie_count: {}", .{cookie_count});
 
-            // iterate over all cookies as strings
+            // iterate over all cookies as strings (always_alloc=false)
             var strCookies = r.cookiesToOwnedStrList(alloc, false) catch unreachable;
             defer strCookies.deinit();
             std.debug.print("\n", .{});
             for (strCookies.items) |kv| {
                 std.log.info("CookieStr `{s}` is `{s}`", .{ kv.key.str, kv.value.str });
+                // we don't need to deinit kv.key and kv.value because we requested always_alloc=false
+                // so they are just slices into the request buffer
             }
 
             std.debug.print("\n", .{});
@@ -61,9 +65,9 @@ pub fn main() !void {
 
             // let's get cookie "ZIG_ZAP" by name
             std.debug.print("\n", .{});
-            if (r.getCookieStr("ZIG_ZAP", alloc, false)) |maybe_str| {
+            if (r.getCookieStr(alloc, "ZIG_ZAP", false)) |maybe_str| {
                 if (maybe_str) |*s| {
-                    defer s.deinit();
+                    defer s.deinit(); // unnecessary because always_alloc=false
 
                     std.log.info("Cookie ZIG_ZAP = {s}", .{s.str});
                 } else {
@@ -98,7 +102,7 @@ pub fn main() !void {
     Handler.alloc = allocator;
 
     // setup listener
-    var listener = zap.SimpleHttpListener.init(
+    var listener = zap.HttpListener.init(
         .{
             .port = 3000,
             .on_request = Handler.on_request,
@@ -115,6 +119,6 @@ pub fn main() !void {
     defer thread.join();
     zap.start(.{
         .threads = 1,
-        .workers = 0,
+        .workers = 1,
     });
 }

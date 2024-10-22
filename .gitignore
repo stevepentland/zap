@@ -11,6 +11,7 @@ wrk/csharp/obj/
 wrk/csharp/out/
 scratch
 **/.mypy_cache/*
-docs/
 .DS_Store
 .vs/
+**/*.perflog
+wrk/*.png
